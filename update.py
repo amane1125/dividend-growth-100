@@ -7,7 +7,10 @@ from lxml import etree
 
 DB = "database.db"
 
-# ========= DB =========
+
+# =========================
+# DB初期化
+# =========================
 
 def init_db():
     conn = sqlite3.connect(DB)
@@ -46,38 +49,68 @@ def init_db():
     conn.close()
 
 
-# ========= EDINET 一覧 =========
+# =========================
+# EDINET API取得
+# =========================
 
 def fetch_documents(date_str):
     url = "https://disclosure.edinet-fsa.go.jp/api/v1/documents.json"
     params = {"date": date_str, "type": 2}
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json().get("results", [])
 
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    r = requests.get(url, params=params, headers=headers, timeout=30)
+    r.raise_for_status()
+
+    data = r.json()
+    results = data.get("results", [])
+
+    print(f"[{date_str}] total results: {len(results)}")
+
+    return results
+
+
+# =========================
+# 有報保存
+# =========================
 
 def save_new_documents(results):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
 
+    inserted = 0
+
     for r in results:
         doc_type = str(r.get("docTypeCode", ""))
+        sec_code = r.get("secCode")
+        period_end = r.get("periodEnd")
 
-        # 有価証券報告書を広く拾う
+        # デバッグ表示（最初の数件だけ）
+        # print("docType:", doc_type)
+
+        # 有価証券報告書判定
         if doc_type.startswith("120"):
+
+            if not sec_code:
+                continue
 
             c.execute("""
             INSERT OR IGNORE INTO documents(doc_id, sec_code, period_end)
             VALUES(?,?,?)
             """, (
                 r.get("docID"),
-                r.get("secCode"),
-                r.get("periodEnd")
+                sec_code,
+                period_end
             ))
+
+            inserted += 1
 
     conn.commit()
     conn.close()
 
+    print(f"Inserted documents: {inserted}")
 
 
 def get_unprocessed_docs():
@@ -89,12 +122,19 @@ def get_unprocessed_docs():
     return rows
 
 
-# ========= XBRL取得 =========
+# =========================
+# XBRL取得
+# =========================
 
 def download_xbrl_zip(doc_id):
     url = f"https://disclosure.edinet-fsa.go.jp/api/v1/documents/{doc_id}"
     params = {"type": 1}
-    r = requests.get(url, params=params, timeout=60)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    r = requests.get(url, params=params, headers=headers, timeout=60)
     r.raise_for_status()
     return r.content
 
@@ -107,7 +147,9 @@ def extract_main_xbrl(zip_bytes):
     return None
 
 
-# ========= 財務抽出（軽量版） =========
+# =========================
+# 財務抽出（簡易）
+# =========================
 
 def find_value(tree, keywords):
     for elem in tree.iter():
@@ -132,7 +174,9 @@ def parse_financials(xbrl_bytes):
     return revenue, operating, net_income, dividend
 
 
-# ========= DB保存 =========
+# =========================
+# DB保存
+# =========================
 
 def save_financials(sec_code, period_end, revenue, operating, net_income, dividend):
     year = int(period_end[:4])
@@ -160,34 +204,43 @@ def save_financials(sec_code, period_end, revenue, operating, net_income, divide
     conn.close()
 
 
-# ========= メイン =========
+# =========================
+# メイン処理
+# =========================
 
 def main():
     init_db()
 
-    # 直近30日スキャン
+    print("===== Fetching documents =====")
+
     today = datetime.today()
-    for i in range(365 * 5):
+
+    # 🔥 3年分スキャン
+    for i in range(365 * 3):
         d = today - timedelta(days=i)
+
         try:
             results = fetch_documents(d.strftime("%Y-%m-%d"))
             save_new_documents(results)
-        except:
-            pass
+        except Exception as e:
+            print("Fetch error:", e)
 
-    # 未処理だけ処理
+    print("===== Processing XBRL =====")
+
     docs = get_unprocessed_docs()
+    print("Unprocessed count:", len(docs))
 
     for doc_id, sec_code, period_end in docs:
         try:
             zip_bytes = download_xbrl_zip(doc_id)
             xbrl = extract_main_xbrl(zip_bytes)
+
             if xbrl:
                 revenue, operating, net_income, dividend = parse_financials(xbrl)
                 save_financials(sec_code, period_end, revenue, operating, net_income, dividend)
                 print(f"Processed: {sec_code} {period_end}")
         except Exception as e:
-            print(f"Error: {doc_id} {e}")
+            print(f"XBRL error: {doc_id} {e}")
 
 
 if __name__ == "__main__":
