@@ -162,7 +162,7 @@ def main():
 
     # 直近30日スキャン
     today = datetime.today()
-    for i in range(30):
+    for i in range(365 * 5):
         d = today - timedelta(days=i)
         try:
             results = fetch_documents(d.strftime("%Y-%m-%d"))
