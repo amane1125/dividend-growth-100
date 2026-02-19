@@ -61,7 +61,11 @@ def save_new_documents(results):
     c = conn.cursor()
 
     for r in results:
-        if r.get("docTypeCode") == "120":  # 有価証券報告書
+        doc_type = str(r.get("docTypeCode", ""))
+
+        # 有価証券報告書を広く拾う
+        if doc_type.startswith("120"):
+
             c.execute("""
             INSERT OR IGNORE INTO documents(doc_id, sec_code, period_end)
             VALUES(?,?,?)
@@ -73,6 +77,7 @@ def save_new_documents(results):
 
     conn.commit()
     conn.close()
+
 
 
 def get_unprocessed_docs():
